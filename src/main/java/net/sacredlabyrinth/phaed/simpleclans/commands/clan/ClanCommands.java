@@ -148,6 +148,16 @@ public class ClanCommands extends BaseCommand {
             ChatBlock.sendMessage(sender, RED + lang("you.cannot.invite.yourself", sender));
             return;
         }
+        
+        // Check global cooldown first (applies to joining ANY clan)
+        long minutesBeforeJoinAny = cm.getMinutesBeforeJoinAnyClan(invited.getClanPlayer());
+        if (minutesBeforeJoinAny != 0) {
+            ChatBlock.sendMessage(sender, RED +
+                    lang("the.player.must.wait.before.joining.any.clan", sender, minutesBeforeJoinAny));
+            return;
+        }
+        
+        // Check specific clan rejoin cooldown
         long minutesBeforeRejoin = cm.getMinutesBeforeRejoin(invited.getClanPlayer(), clan);
         if (minutesBeforeRejoin != 0) {
             ChatBlock.sendMessage(sender, RED +

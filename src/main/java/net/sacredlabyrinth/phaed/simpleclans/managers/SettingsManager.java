@@ -304,6 +304,8 @@ public final class SettingsManager {
         ALLOW_RESET_KDR("settings.allow-reset-kdr", false),
         REJOIN_COOLDOWN("settings.rejoin-cooldown", 60),
         ENABLE_REJOIN_COOLDOWN("settings.rejoin-cooldown-enabled", false),
+        GLOBAL_CLAN_COOLDOWN("settings.global-clan-cooldown", 1440),
+        ENABLE_GLOBAL_CLAN_COOLDOWN("settings.global-clan-cooldown-enabled", false),
         RANKING_TYPE("settings.ranking-type", "DENSE"),
         LIST_DEFAULT_ORDER_BY("settings.list-default-order-by", "kdr"),
         LORE_LENGTH("settings.lore-length", 36),

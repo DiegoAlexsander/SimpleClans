@@ -50,6 +50,9 @@ settings:
     allow-reset-kdr: false
     rejoin-cooldown: 60
     rejoin-cooldown-enabled: false
+    # Global cooldown (in minutes) - prevents joining or creating ANY clan after leaving/being kicked/disbanded
+    global-clan-cooldown: 1440
+    global-clan-cooldown-enabled: false
     ranking-type: "DENSE"
     list-default-order-by: kdr
     lore-length: 36

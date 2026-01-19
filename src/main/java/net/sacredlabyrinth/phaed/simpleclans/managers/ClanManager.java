@@ -924,6 +924,28 @@ public final class ClanManager {
     }
 
     /**
+     * Returns the number of minutes before a player can join or create any clan.
+     * This is the global cooldown that applies after leaving any clan (resign, kick, disband).
+     *
+     * @param cp the clan player to check
+     * @return minutes remaining, or 0 if no cooldown is active
+     */
+    public long getMinutesBeforeJoinAnyClan(@NotNull ClanPlayer cp) {
+        SettingsManager settings = plugin.getSettingsManager();
+        if (settings.is(ENABLE_GLOBAL_CLAN_COOLDOWN)) {
+            Long lastLeave = cp.getLastClanLeaveTime();
+            if (lastLeave != null) {
+                long timePassed = Instant.ofEpochMilli(lastLeave).until(Instant.now(), ChronoUnit.MINUTES);
+                int cooldown = settings.getInt(GLOBAL_CLAN_COOLDOWN);
+                if (timePassed < cooldown) {
+                    return cooldown - timePassed;
+                }
+            }
+        }
+        return 0;
+    }
+
+    /**
      * Purchase member fee set
      */
     public boolean purchaseMemberFeeSet(Player player) {

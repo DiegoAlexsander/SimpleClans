@@ -28,6 +28,11 @@ import static net.sacredlabyrinth.phaed.simpleclans.managers.SettingsManager.Con
  */
 public class ClanPlayer implements Serializable, Comparable<ClanPlayer> {
     private static final long serialVersionUID = 1L;
+    /**
+     * Special key used in resignTimes to store the global clan leave time.
+     * This is used for the global cooldown that prevents joining or creating ANY clan.
+     */
+    public static final String GLOBAL_RESIGN_KEY = "*";
     private UUID uniqueId;
     private String displayName;
     private boolean leader;
@@ -619,9 +624,12 @@ public class ClanPlayer implements Serializable, Comparable<ClanPlayer> {
     public void setResignTimes(@Nullable Map<String, Long> resignTimes) {
         if (resignTimes != null) {
             final int cooldown = SimpleClans.getInstance().getSettingsManager().getInt(REJOIN_COOLDOWN);
+            final int globalCooldown = SimpleClans.getInstance().getSettingsManager().getInt(GLOBAL_CLAN_COOLDOWN);
             resignTimes.forEach((k, v) -> {
                 long timePassed = Instant.ofEpochMilli(v).until(Instant.now(), ChronoUnit.MINUTES);
-                if (timePassed < cooldown) {
+                // Use global cooldown for the global key, otherwise use rejoin cooldown
+                int applicableCooldown = GLOBAL_RESIGN_KEY.equals(k) ? globalCooldown : cooldown;
+                if (timePassed < applicableCooldown) {
                     this.resignTimes.put(k, v);
                 }
             });
@@ -633,6 +641,24 @@ public class ClanPlayer implements Serializable, Comparable<ClanPlayer> {
      */
     public void addResignTime(String tag) {
         if (tag != null) resignTimes.put(tag, System.currentTimeMillis());
+    }
+
+    /**
+     * Returns the last time this player left any clan (global resign time).
+     * Used for the global cooldown system.
+     *
+     * @return the time in millis when the player last left a clan, or null if never
+     */
+    public @Nullable Long getLastClanLeaveTime() {
+        return resignTimes.get(GLOBAL_RESIGN_KEY);
+    }
+
+    /**
+     * Updates the global clan leave time to now.
+     * This is called when a player leaves a clan by any means (resign, kick, disband).
+     */
+    public void updateLastClanLeaveTime() {
+        resignTimes.put(GLOBAL_RESIGN_KEY, System.currentTimeMillis());
     }
 
     /**
