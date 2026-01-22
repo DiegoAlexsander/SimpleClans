@@ -4,6 +4,8 @@ import net.sacredlabyrinth.phaed.simpleclans.*;
 import net.sacredlabyrinth.phaed.simpleclans.ClanPlayer.Channel;
 import net.sacredlabyrinth.phaed.simpleclans.managers.PermissionsManager;
 import net.sacredlabyrinth.phaed.simpleclans.managers.SettingsManager;
+import net.sacredlabyrinth.phaed.simpleclans.utils.CurrencyFormat;
+import net.sacredlabyrinth.phaed.simpleclans.utils.ChatUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
@@ -91,11 +93,56 @@ public class SCPlayerListener extends SCListener {
 
         plugin.getPermissionsManager().addPlayerPermissions(cp);
 
-        if (settingsManager.is(BB_SHOW_ON_LOGIN) && cp.isBbEnabled() && cp.getClan() != null) {
-            cp.getClan().displayBb(player, settingsManager.getInt(BB_LOGIN_SIZE));
+        Clan clan = cp.getClan();
+        if (settingsManager.is(BB_SHOW_ON_LOGIN) && cp.isBbEnabled() && clan != null) {
+            clan.displayBb(player, settingsManager.getInt(BB_LOGIN_SIZE));
+            
+            // Show fee info only for members who actually pay the fee
+            // Excludes: leaders and members with FEE_BYPASS rank permission
+            // Respects: global config (ECONOMY_MEMBER_FEE_ENABLED) + clan toggle (isMemberFeeEnabled)
+            if (settingsManager.is(ECONOMY_MEMBER_FEE_ENABLED) 
+                    && clan.isMemberFeeEnabled() 
+                    && clan.getMemberFee() > 0
+                    && clan.getFeePayers().contains(cp)) {
+                int feeHour = settingsManager.getInt(TASKS_COLLECT_FEE_HOUR);
+                int feeMinute = settingsManager.getInt(TASKS_COLLECT_FEE_MINUTE);
+                String feeInfo = ChatUtils.parseColors(lang("fee.login.info", player,
+                        CurrencyFormat.format(clan.getMemberFee()),
+                        String.format("%02d", feeHour),
+                        String.format("%02d", feeMinute)));
+                player.sendMessage(feeInfo);
+            }
+            
+            // Show upkeep info for leaders only
+            // Respects: ECONOMY_UPKEEP_ENABLED + ECONOMY_UPKEEP_REQUIRES_MEMBER_FEE (if true, requires clan fee enabled)
+            if (cp.isLeader() 
+                    && settingsManager.is(ECONOMY_UPKEEP_ENABLED)
+                    && settingsManager.getDouble(ECONOMY_UPKEEP) > 0) {
+                // Check if upkeep requires member fee to be enabled
+                boolean showUpkeep = true;
+                if (settingsManager.is(ECONOMY_UPKEEP_REQUIRES_MEMBER_FEE) && !clan.isMemberFeeEnabled()) {
+                    showUpkeep = false;
+                }
+                
+                if (showUpkeep) {
+                    int upkeepHour = settingsManager.getInt(TASKS_COLLECT_UPKEEP_HOUR);
+                    int upkeepMinute = settingsManager.getInt(TASKS_COLLECT_UPKEEP_MINUTE);
+                    String upkeepInfo = ChatUtils.parseColors(lang("upkeep.login.info", player,
+                            CurrencyFormat.format(settingsManager.getDouble(ECONOMY_UPKEEP)),
+                            String.format("%02d", upkeepHour),
+                            String.format("%02d", upkeepMinute),
+                            CurrencyFormat.format(clan.getBalance())));
+                    player.sendMessage(upkeepInfo);
+                }
+            }
         }
 
         plugin.getPermissionsManager().addClanPermissions(cp);
+        
+        // Notify other servers via Redis
+        if (plugin.getRedisManager() != null && plugin.getRedisManager().isInitialized()) {
+            plugin.getRedisManager().publishPlayerJoin(player.getName());
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -135,6 +182,11 @@ public class SCPlayerListener extends SCListener {
         plugin.getPermissionsManager().removeClanPlayerPermissions(cp);
         plugin.getClanManager().updateLastSeen(event.getPlayer());
         plugin.getRequestManager().endPendingRequest(event.getPlayer().getName());
+        
+        // Notify other servers via Redis
+        if (plugin.getRedisManager() != null && plugin.getRedisManager().isInitialized()) {
+            plugin.getRedisManager().publishPlayerQuit(event.getPlayer().getName());
+        }
     }
 
     @EventHandler

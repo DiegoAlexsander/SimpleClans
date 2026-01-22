@@ -3,6 +3,7 @@ package net.sacredlabyrinth.phaed.simpleclans.managers;
 import com.cryptomorin.xseries.XMaterial;
 import net.sacredlabyrinth.phaed.simpleclans.Rank;
 import net.sacredlabyrinth.phaed.simpleclans.SimpleClans;
+import net.sacredlabyrinth.phaed.simpleclans.redis.RedisManager;
 import net.sacredlabyrinth.phaed.simpleclans.utils.ChatUtils;
 import org.bukkit.Material;
 import org.bukkit.configuration.InvalidConfigurationException;
@@ -199,6 +200,22 @@ public final class SettingsManager {
      * @param playerUniqueId the player's name
      */
     public void addBanned(UUID playerUniqueId) {
+        addBannedLocal(playerUniqueId);
+        
+        // Publish to other servers via Redis
+        RedisManager redisManager = plugin.getRedisManager();
+        if (redisManager != null && redisManager.isInitialized()) {
+            redisManager.publishBan(playerUniqueId);
+        }
+    }
+
+    /**
+     * Add a player to the banned list locally (without publishing to Redis).
+     * Used when receiving ban sync from other servers.
+     *
+     * @param playerUniqueId the player's UUID
+     */
+    public void addBannedLocal(UUID playerUniqueId) {
         List<String> bannedPlayers = getStringList(BANNED_PLAYERS);
         if (isBanned(playerUniqueId)) {
             return;
@@ -225,6 +242,22 @@ public final class SettingsManager {
      * @param playerUniqueId the player's name
      */
     public void removeBanned(UUID playerUniqueId) {
+        removeBannedLocal(playerUniqueId);
+        
+        // Publish to other servers via Redis
+        RedisManager redisManager = plugin.getRedisManager();
+        if (redisManager != null && redisManager.isInitialized()) {
+            redisManager.publishUnban(playerUniqueId);
+        }
+    }
+
+    /**
+     * Remove a player from the banned list locally (without publishing to Redis).
+     * Used when receiving unban sync from other servers.
+     *
+     * @param playerUniqueId the player's UUID
+     */
+    public void removeBannedLocal(UUID playerUniqueId) {
         List<String> bannedPlayers = getStringList(BANNED_PLAYERS);
         bannedPlayers.remove(playerUniqueId.toString());
         set(BANNED_PLAYERS, bannedPlayers);
@@ -461,12 +494,16 @@ public final class SettingsManager {
         ================
          *
          */
+        TASKS_COLLECT_UPKEEP_SERVER("tasks.collect-upkeep.server", ""),
         TASKS_COLLECT_UPKEEP_HOUR("tasks.collect-upkeep.hour", 1),
         TASKS_COLLECT_UPKEEP_MINUTE("tasks.collect-upkeep.minute", 30),
         TASKS_COLLECT_UPKEEP_WARNING_HOUR("tasks.collect-upkeep-warning.hour", 12),
         TASKS_COLLECT_UPKEEP_WARNING_MINUTE("tasks.collect-upkeep-warning.minute", 0),
+        TASKS_COLLECT_FEE_SERVER("tasks.collect-fee.server", ""),
         TASKS_COLLECT_FEE_HOUR("tasks.collect-fee.hour", 1),
         TASKS_COLLECT_FEE_MINUTE("tasks.collect-fee.minute", 0),
+        TASKS_COLLECT_FEE_WARNING_HOUR("tasks.collect-fee-warning.hour", 12),
+        TASKS_COLLECT_FEE_WARNING_MINUTE("tasks.collect-fee-warning.minute", 0),
         /*
         ================
         > Page Settings

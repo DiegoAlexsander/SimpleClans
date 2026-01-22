@@ -175,14 +175,24 @@ clan:
     default-rank: "recruit"
 
 tasks:
+    # In multi-server environments, specify which server should collect upkeep/fees.
+    # Use the same server-id as defined in redis.server-id
+    # Leave empty to run on all servers (NOT recommended for multi-server setups)
     collect-upkeep:
+        server: ""
         hour: 1
         minute: 30
+    # Warning sent to leaders when clan balance is not enough for upkeep
     collect-upkeep-warning:
         hour: 12
         minute: 0
     collect-fee:
+        server: ""
         hour: 1
+        minute: 0
+    # Warning sent to members when their balance is not enough for fee
+    collect-fee-warning:
+        hour: 12
         minute: 0
 page:
     untrusted-color: '8'
@@ -224,7 +234,7 @@ allychat:
     member-color: '7'
 discordchat:
     enable: false
-    auto-creation: true
+    auto-creation: false
     discord-format: "%player% » %message%"
     format: "&b[&9D&b] &b[%clan%&b] &4<%nick-color%%player%&4> %rank%: &b%message%"
     spy-format: "&8[Spy] [&9D&8] <%clean-tag%&8> <%nick-color%*&8%player%>&8 %rank%&8: %message%"
@@ -259,3 +269,68 @@ performance:
   save-interval: 10
   use-threads: true
   use-bungeecord: false
+
+# ============================================================
+# Redis Configuration (Multi-Server Sync)
+# ============================================================
+# Redis enables real-time synchronization between multiple servers.
+# When enabled, this replaces BungeeCord plugin messaging for sync.
+# 
+# Benefits:
+# - Persistent requests (invites work across server switches)
+# - Distributed locks (prevents race conditions on bank operations)
+# - Real-time cache invalidation
+# - Cross-server chat synchronization
+redis:
+  # Enable Redis for multi-server synchronization
+  enable: false
+  
+  # Redis server connection
+  host: "localhost"
+  port: 6379
+  
+  # Redis authentication (Redis 6.0+ supports ACL with username)
+  # For Redis < 6.0, leave username empty and use only password
+  username: ""
+  password: ""
+  
+  # Use SSL/TLS connection
+  ssl: false
+  
+  # Connection pool settings
+  pool:
+    max-total: 16
+    max-idle: 8
+    min-idle: 2
+    timeout: 3000
+  
+  # Unique server identifier
+  # IMPORTANT: Must be unique for each server in the network!
+  # Used to identify message origin and prevent processing own messages.
+  # Examples: "lobby", "survival", "pvp", "minigames"
+  # If empty, will be auto-generated as "server-{random-uuid}"
+  server-id: ""
+  
+  # Cache settings (in seconds)
+  cache:
+    clan-ttl: 300
+    player-ttl: 300
+  
+  # Lock timeouts for critical operations (in milliseconds)
+  locks:
+    bank-timeout: 5000
+    disband-timeout: 30000
+    default-timeout: 10000
+  
+  # Request persistence (invites, alliances, etc) TTL in seconds
+  requests:
+    ttl: 300
+  
+  # Vote persistence (promote, demote, disband) TTL in seconds
+  votes:
+    ttl: 120
+  
+  # Reconnection settings
+  reconnect:
+    delay: 5000
+    max-attempts: 10

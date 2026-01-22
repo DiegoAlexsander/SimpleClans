@@ -5,11 +5,14 @@ import co.aikar.commands.annotation.*;
 import net.sacredlabyrinth.phaed.simpleclans.ChatBlock;
 import net.sacredlabyrinth.phaed.simpleclans.Clan;
 import net.sacredlabyrinth.phaed.simpleclans.EconomyResponse;
+import net.sacredlabyrinth.phaed.simpleclans.SimpleClans;
 import net.sacredlabyrinth.phaed.simpleclans.events.BankDepositEvent;
 import net.sacredlabyrinth.phaed.simpleclans.events.BankWithdrawEvent;
 import net.sacredlabyrinth.phaed.simpleclans.loggers.BankLogger;
 import net.sacredlabyrinth.phaed.simpleclans.loggers.BankOperator;
 import net.sacredlabyrinth.phaed.simpleclans.managers.PermissionsManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.RedisManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.lock.DistributedLock;
 import net.sacredlabyrinth.phaed.simpleclans.utils.CurrencyFormat;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -59,6 +62,26 @@ public class BankCommand extends BaseCommand {
             return;
         }
         amount = Math.abs(amount);
+        
+        // Try to acquire distributed lock for bank operations
+        RedisManager redis = SimpleClans.getInstance().getRedisManager();
+        if (redis != null && redis.isInitialized()) {
+            try (DistributedLock lock = redis.acquireBankLock(clan.getTag())) {
+                if (!lock.tryAcquire()) {
+                    player.sendMessage(RED + lang("bank.operation.in.progress", player));
+                    return;
+                }
+                // Reload clan balance from database to ensure consistency
+                SimpleClans.getInstance().getStorageManager().reloadClan(clan);
+                processWithdrawInternal(player, clan, amount);
+            }
+        } else {
+            // No Redis, proceed without lock
+            processWithdrawInternal(player, clan, amount);
+        }
+    }
+
+    private void processWithdrawInternal(Player player, Clan clan, double amount) {
         /*
             TODO: Remove at SimpleClans 3.0
          */
@@ -79,8 +102,10 @@ public class BankCommand extends BaseCommand {
                 } else {
                     clan.setBalance(operator, REVERT, BankLogger.Operation.WITHDRAW, clan.getBalance() + amount);
                 }
+                break;
             case NOT_ENOUGH_BALANCE:
                 player.sendMessage(lang("clan.bank.not.enough.money", player));
+                break;
         }
     }
 
@@ -109,6 +134,30 @@ public class BankCommand extends BaseCommand {
         }
         amount = Math.abs(amount);
 
+        if (!permissions.playerHasMoney(player, amount)) {
+            player.sendMessage(AQUA + lang("not.sufficient.money", player, CurrencyFormat.format(amount)));
+            return;
+        }
+
+        // Try to acquire distributed lock for bank operations
+        RedisManager redis = SimpleClans.getInstance().getRedisManager();
+        if (redis != null && redis.isInitialized()) {
+            try (DistributedLock lock = redis.acquireBankLock(clan.getTag())) {
+                if (!lock.tryAcquire()) {
+                    player.sendMessage(RED + lang("bank.operation.in.progress", player));
+                    return;
+                }
+                // Reload clan balance from database to ensure consistency
+                SimpleClans.getInstance().getStorageManager().reloadClan(clan);
+                processDepositInternal(player, clan, amount);
+            }
+        } else {
+            // No Redis, proceed without lock
+            processDepositInternal(player, clan, amount);
+        }
+    }
+
+    private void processDepositInternal(Player player, Clan clan, double amount) {
         /*
             TODO: Remove at SimpleClans 3.0
          */
@@ -121,10 +170,6 @@ public class BankCommand extends BaseCommand {
          * ——————————————————————————————————
          */
 
-        if (!permissions.playerHasMoney(player, amount)) {
-            player.sendMessage(AQUA + lang("not.sufficient.money", player, CurrencyFormat.format(amount)));
-            return;
-        }
         BankOperator operator = new BankOperator(player, permissions.playerGetMoney(player));
         EconomyResponse response = clan.deposit(operator, COMMAND, amount);
         if (response == EconomyResponse.SUCCESS) {

@@ -1,6 +1,7 @@
 package net.sacredlabyrinth.phaed.simpleclans.commands.data;
 
 import net.sacredlabyrinth.phaed.simpleclans.*;
+import net.sacredlabyrinth.phaed.simpleclans.proxy.RedisProxyManager;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
@@ -29,10 +30,12 @@ public class Vitals extends Sendable {
         members.addAll(Helper.stripOffLinePlayers(clan.getNonLeaders()));
 
         addRows(members);
+        addRemoteRows(clan.getMembers());
 
         chatBlock.addRow(" -- Allies -- ", "", "", "", "", "");
 
         addRows(clan.getAllAllyMembers());
+        addRemoteAllyRows();
 
         sendBlock();
     }
@@ -75,5 +78,44 @@ public class Vitals extends Sendable {
                 chatBlock.addRow("  " + name, RED + health, hunger, WHITE + food, armor, weapons);
             }
         }
+    }
+    
+    private void addRemoteRows(Collection<ClanPlayer> players) {
+        for (ClanPlayer cpm : players) {
+            if (cpm.toPlayer() != null) {
+                continue;
+            }
+            
+            String remoteServer = getRemotePlayerServer(cpm.getName());
+            if (remoteServer != null) {
+                String nameColor = cpm.isLeader() ? sm.getColored(PAGE_LEADER_COLOR) : 
+                        (cpm.isTrusted() ? sm.getColored(PAGE_TRUSTED_COLOR) : sm.getColored(PAGE_UNTRUSTED_COLOR));
+                String name = "  " + nameColor + cpm.getName();
+                chatBlock.addRow(name, "", "", YELLOW + remoteServer, "", "");
+            }
+        }
+    }
+    
+    private void addRemoteAllyRows() {
+        for (ClanPlayer cpm : clan.getAllAllyMembers()) {
+            if (cpm.toPlayer() != null) {
+                continue;
+            }
+            
+            String remoteServer = getRemotePlayerServer(cpm.getName());
+            if (remoteServer != null) {
+                String nameColor = cpm.isLeader() ? sm.getColored(PAGE_LEADER_COLOR) : 
+                        (cpm.isTrusted() ? sm.getColored(PAGE_TRUSTED_COLOR) : sm.getColored(PAGE_UNTRUSTED_COLOR));
+                String name = "  " + nameColor + cpm.getName();
+                chatBlock.addRow(name, "", "", YELLOW + remoteServer, "", "");
+            }
+        }
+    }
+    
+    private String getRemotePlayerServer(String playerName) {
+        if (plugin.getProxyManager() instanceof RedisProxyManager) {
+            return ((RedisProxyManager) plugin.getProxyManager()).getPlayerServer(playerName);
+        }
+        return null;
     }
 }

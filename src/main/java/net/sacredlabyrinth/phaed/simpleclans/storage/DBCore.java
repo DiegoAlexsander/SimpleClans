@@ -98,11 +98,26 @@ public interface DBCore {
     }
 
     default void executeUpdate(String query) {
+        executeUpdateWithCallback(query, null);
+    }
+
+    /**
+     * Execute an update statement with an optional callback that runs after the query completes.
+     * Useful for Redis notifications that need to happen AFTER the database write.
+     * 
+     * @param query the query
+     * @param onSuccess callback to run after successful execution (can be null)
+     */
+    default void executeUpdateWithCallback(String query, @Nullable Runnable onSuccess) {
         final Exception exception = new Exception(); // Stores a reference to the caller's stack trace for async tasks
         Runnable executeUpdate = () -> {
             if (getConnection() != null) {
                 try {
                     getConnection().createStatement().executeUpdate(query);
+                    // Execute callback on success
+                    if (onSuccess != null) {
+                        onSuccess.run();
+                    }
                 } catch (SQLException ex) {
                     log.log(Level.SEVERE, String.format("Error executing query: %s", query), ex);
                     if (!Bukkit.isPrimaryThread()) {

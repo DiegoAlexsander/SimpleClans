@@ -177,6 +177,10 @@ public final class Request {
     public void incrementAskCount() {
         askCount += 1;
     }
+    
+    public int getAskCount() {
+        return askCount;
+    }
 
     public boolean reachedRequestLimit() {
         return askCount > SimpleClans.getInstance().getSettingsManager().getInt(REQUEST_MAX);

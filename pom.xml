@@ -85,6 +85,18 @@
                             <pattern>com.google.gson</pattern>
                             <shadedPattern>net.sacredlabyrinth.phaed.simpleclans.gson</shadedPattern>
                         </relocation>
+                        <relocation>
+                            <pattern>redis.clients</pattern>
+                            <shadedPattern>net.sacredlabyrinth.phaed.simpleclans.libs.redis</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.apache.commons.pool2</pattern>
+                            <shadedPattern>net.sacredlabyrinth.phaed.simpleclans.libs.pool2</shadedPattern>
+                        </relocation>
+                        <relocation>
+                            <pattern>org.json</pattern>
+                            <shadedPattern>net.sacredlabyrinth.phaed.simpleclans.libs.json</shadedPattern>
+                        </relocation>
                     </relocations>
                     <artifactSet>
                         <excludes>
@@ -262,6 +274,14 @@
             <version>2.10.1</version>
         </dependency>
 
+        <!-- Redis - Multi-server sync -->
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>5.1.0</version>
+            <scope>compile</scope>
+        </dependency>
+
         <!--    Test frameworks    -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -319,6 +339,7 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jedis.version>5.1.0</jedis.version>
     </properties>
 
     <!-- Upstream Distribution -->

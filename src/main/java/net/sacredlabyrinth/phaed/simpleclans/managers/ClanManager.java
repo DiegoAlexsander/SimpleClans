@@ -146,9 +146,14 @@ public final class ClanManager {
         cp.setLeader(true);
         clan.getRanks().addAll(plugin.getSettingsManager().getStarterRanks());
 
-        plugin.getStorageManager().insertClan(clan);
+        // Import clan locally immediately so it's available
         importClan(clan);
-        plugin.getStorageManager().updateClanPlayer(cp);
+        
+        // Insert clan to database with callback to update player AFTER clan is saved
+        // This ensures other servers can load the clan when they receive player invalidation
+        plugin.getStorageManager().insertClan(clan, () -> {
+            plugin.getStorageManager().updateClanPlayer(cp);
+        });
 
         plugin.getRequestManager().deny(cp); // denies any previous invitation
         SimpleClans.getInstance().getPermissionsManager().updateClanPermissions(clan);
@@ -355,30 +360,28 @@ public final class ClanManager {
     }
 
     /**
-     * Gets the ClanPlayer object for the player, creates one if not found
+     * Gets the ClanPlayer object for the player, creates one if not found.
+     * In multi-server environments, checks the database first to avoid duplicates.
      */
     public ClanPlayer getCreateClanPlayer(UUID uuid) {
         Objects.requireNonNull(uuid, "UUID must not be null");
+        
+        // Check local cache first
         if (clanPlayers.containsKey(uuid)) {
             return clanPlayers.get(uuid);
         }
 
-        ClanPlayer cp = new ClanPlayer(uuid);
-
-        boolean save = true;
-        for (ClanPlayer other : getAllClanPlayers()) {
-            if (other.getName().equals(cp.getName())) {
-                save = false;
-                break;
-            }
-        }
-        if (save) {
-            plugin.getStorageManager().insertClanPlayer(cp);
+        // In multi-server, try to load from database first (another server might have created it)
+        ClanPlayer cp = plugin.getStorageManager().retrieveOneClanPlayer(uuid);
+        if (cp != null) {
             importClanPlayer(cp);
-        } else if (plugin.getSettingsManager().is(DEBUG)) {
-            plugin.getLogger().log(Level.WARNING, String.format("There already is a ClanPlayer with the name %s",
-                    cp.getName()), new Exception());
+            return cp;
         }
+
+        // Not found in database, create new player
+        cp = new ClanPlayer(uuid);
+        plugin.getStorageManager().insertClanPlayer(cp);
+        importClanPlayer(cp);
 
         return cp;
     }
@@ -1182,5 +1185,98 @@ public final class ClanManager {
         }
 
         return false;
+    }
+
+    // ========================================
+    // Redis Multi-Server Cache Invalidation
+    // ========================================
+
+    /**
+     * Invalidates the local cache for a specific clan.
+     * Called when another server notifies that a clan was updated.
+     * Reloads the clan data from the database.
+     *
+     * @param tag The clan tag to invalidate
+     */
+    public void invalidateLocalClanCache(@NotNull String tag) {
+        String cleanTag = Helper.cleanTag(tag);
+        Clan existing = clans.get(cleanTag);
+        
+        if (existing != null) {
+            plugin.getLogger().fine("[Redis] Reloading clan from database: " + cleanTag);
+            // Reload clan from database
+            plugin.getStorageManager().reloadClan(existing);
+        } else {
+            // Clan doesn't exist locally - load from database (new clan from another server)
+            Clan newClan = plugin.getStorageManager().retrieveOneClan(cleanTag);
+            if (newClan != null) {
+                importClan(newClan);
+                plugin.getLogger().info("[Redis] Imported new clan from another server: " + cleanTag);
+            }
+            // If not found, it's ok - might be a race condition, next notification will get it
+        }
+    }
+
+    /**
+     * Invalidates the local cache for a specific player.
+     * Called when another server notifies that a player was updated.
+     * Reloads the player data from the database.
+     *
+     * @param uuid The player UUID to invalidate
+     */
+    public void invalidateLocalPlayerCache(@NotNull UUID uuid) {
+        ClanPlayer existing = clanPlayers.get(uuid);
+        
+        if (existing != null) {
+            plugin.getLogger().fine("[Redis] Reloading player from database: " + uuid);
+            // Reload player from database
+            plugin.getStorageManager().reloadClanPlayer(existing);
+        } else {
+            // Player doesn't exist locally - load from database (may have joined a clan on another server)
+            ClanPlayer newCp = plugin.getStorageManager().retrieveOneClanPlayer(uuid);
+            if (newCp != null) {
+                plugin.getLogger().fine("[Redis] Importing player from database: " + newCp.getName());
+                importClanPlayer(newCp);
+                
+                // Make sure player is added to clan's member list
+                Clan clan = newCp.getClan();
+                if (clan != null && !clan.isMember(newCp.getUniqueId())) {
+                    clan.importMember(newCp);
+                }
+            }
+        }
+    }
+
+    /**
+     * Removes a clan from the local memory cache.
+     * Called when another server notifies that a clan was deleted/disbanded.
+     *
+     * @param tag The clan tag to remove
+     */
+    public void deleteClanFromMemory(@NotNull String tag) {
+        String cleanTag = Helper.cleanTag(tag);
+        Clan removed = clans.remove(cleanTag);
+        
+        if (removed != null) {
+            plugin.getLogger().fine("[Redis] Removed clan from memory: " + cleanTag);
+            // Remove all clan members from cache as well
+            for (ClanPlayer cp : removed.getAllMembers()) {
+                clanPlayers.remove(cp.getUniqueId());
+            }
+        }
+    }
+
+    /**
+     * Invalidates all local caches and reloads from database.
+     * Called in rare cases when full synchronization is needed.
+     */
+    public void invalidateAllLocalCaches() {
+        plugin.getLogger().info("[Redis] Invalidating all local caches - full reload");
+        clans.clear();
+        clanPlayers.clear();
+        kills.clear();
+        
+        // Reload all data from database
+        plugin.getStorageManager().importFromDatabase();
     }
 }

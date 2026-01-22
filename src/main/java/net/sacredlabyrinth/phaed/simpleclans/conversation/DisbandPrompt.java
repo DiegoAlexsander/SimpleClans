@@ -2,6 +2,9 @@ package net.sacredlabyrinth.phaed.simpleclans.conversation;
 
 import net.sacredlabyrinth.phaed.simpleclans.Clan;
 import net.sacredlabyrinth.phaed.simpleclans.ClanPlayer;
+import net.sacredlabyrinth.phaed.simpleclans.SimpleClans;
+import net.sacredlabyrinth.phaed.simpleclans.redis.RedisManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.lock.DistributedLock;
 import org.bukkit.conversations.Prompt;
 
 import static net.sacredlabyrinth.phaed.simpleclans.SimpleClans.lang;
@@ -15,7 +18,19 @@ public class DisbandPrompt extends ConfirmationPrompt {
             return new MessagePromptImpl(RED + lang("cannot.disband.permanent", sender));
         }
 
-        clan.disband(sender.toPlayer(), true, false);
+        // Try to acquire distributed lock for disband operation
+        RedisManager redis = SimpleClans.getInstance().getRedisManager();
+        if (redis != null && redis.isInitialized()) {
+            try (DistributedLock lock = redis.acquireDisbandLock(clan.getTag())) {
+                if (!lock.tryAcquire()) {
+                    return new MessagePromptImpl(RED + lang("disband.operation.in.progress", sender));
+                }
+                clan.disband(sender.toPlayer(), true, false);
+            }
+        } else {
+            // No Redis, proceed without lock
+            clan.disband(sender.toPlayer(), true, false);
+        }
         return new MessagePromptImpl(RED + lang("clan.has.been.disbanded", sender, clan.getName()));
     }
 

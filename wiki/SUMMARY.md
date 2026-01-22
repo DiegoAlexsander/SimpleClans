@@ -12,6 +12,7 @@
 * [Clan Upkeep](how-to-setup/clan-upkeep.md)
 * [Clan Below Player's Name](how-to-setup/clan-below-players-name.md)
 * [Clan on Tablist](how-to-setup/clan-on-tablist.md)
+* [Redis Multi-Server Sync](how-to-setup/redis-multi-server.md)
 
 ## Commands and Permissions
 

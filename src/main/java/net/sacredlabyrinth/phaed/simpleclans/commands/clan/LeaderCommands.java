@@ -76,30 +76,33 @@ public class LeaderCommands extends BaseCommand {
                         Clan clan,
                         ClanPlayer cp,
                         @Conditions("online|same_clan") @Name("member") ClanPlayerInput other) {
-        Player otherPl = Objects.requireNonNull(other.getClanPlayer().toPlayer());
-        if (!permissions.has(otherPl, "simpleclans.leader.promotable")) {
+        ClanPlayer otherCp = other.getClanPlayer();
+        Player otherPl = otherCp.toPlayer();
+        
+        // Check permission only if player is online locally
+        if (otherPl != null && !permissions.has(otherPl, "simpleclans.leader.promotable")) {
             ChatBlock.sendMessage(player, RED + lang("the.player.does.not.have.the.permissions.to.lead.a.clan",
                     player));
             return;
         }
-        if (otherPl.getUniqueId().equals(player.getUniqueId())) {
+        if (otherCp.getUniqueId().equals(player.getUniqueId())) {
             ChatBlock.sendMessage(player, RED + lang("you.cannot.promote.yourself", player));
             return;
         }
-        if (clan.isLeader(otherPl.getUniqueId())) {
+        if (clan.isLeader(otherCp.getUniqueId())) {
             ChatBlock.sendMessage(player, RED + lang("the.player.is.already.a.leader", player));
             return;
         }
         if (settings.is(CLAN_CONFIRMATION_FOR_PROMOTE) && clan.getLeaders().size() > 1) {
-            requestManager.requestAllLeaders(cp, ClanRequest.PROMOTE, otherPl.getName(), "asking.for.the.promotion",
-                    player.getName(), otherPl.getName());
+            requestManager.requestAllLeaders(cp, ClanRequest.PROMOTE, otherCp.getName(), "asking.for.the.promotion",
+                    player.getName(), otherCp.getName());
             ChatBlock.sendMessage(player, AQUA + lang("promotion.vote.has.been.requested.from.all.leaders",
                     player));
             return;
         }
 
-        clan.addBb(player.getName(), lang("promoted.to.leader", otherPl.getName()));
-        clan.promote(otherPl.getUniqueId());
+        clan.addBb(player.getName(), lang("promoted.to.leader", otherCp.getName()));
+        clan.promote(otherCp.getUniqueId());
     }
 
     @Subcommand("%disband")

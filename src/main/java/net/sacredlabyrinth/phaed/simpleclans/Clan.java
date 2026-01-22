@@ -541,9 +541,24 @@ public class Clan implements Serializable, Comparable<Clan> {
      * (used internally)
      */
     public void importMember(ClanPlayer cp) {
-        if (!members.contains(cp)) {
-            members.add(cp);
+        // Remove any existing entry with the same UUID to avoid duplicates
+        members.removeIf(existing -> existing.getUniqueId().equals(cp.getUniqueId()));
+        members.add(cp);
+    }
+    
+    /**
+     * Gets a member by UUID from the clan's member list
+     * 
+     * @param uuid The UUID of the member
+     * @return The ClanPlayer if found, null otherwise
+     */
+    public @Nullable ClanPlayer getMember(@NotNull UUID uuid) {
+        for (ClanPlayer cp : members) {
+            if (cp.getUniqueId().equals(uuid)) {
+                return cp;
+            }
         }
+        return null;
     }
 
     /**
@@ -1180,7 +1195,7 @@ public class Clan implements Serializable, Comparable<Clan> {
      * @return true if there are
      */
     public boolean enoughLeadersOnlineToDemote(ClanPlayer cp) {
-        List<ClanPlayer> online = getOnlineLeaders();
+        List<ClanPlayer> online = getGlobalOnlineLeaders();
         online.remove(cp);
 
         double minimum = SimpleClans.getInstance().getSettingsManager().getPercent(CLAN_PERCENTAGE_ONLINE_TO_DEMOTE);
@@ -1188,17 +1203,38 @@ public class Clan implements Serializable, Comparable<Clan> {
         double totalLeaders = getLeaders().size() - 1;
         double onlineLeaders = online.size();
 
-
         return ((onlineLeaders / totalLeaders) * 100) >= minimum;
     }
 
     /**
-     * Gets the online leaders
+     * Gets the online leaders (local server only)
      *
      * @return the online leaders
      */
     public List<ClanPlayer> getOnlineLeaders() {
         return getOnlineMembers().stream().filter(ClanPlayer::isLeader).collect(Collectors.toList());
+    }
+
+    /**
+     * Gets leaders online globally (across all servers via proxy/Redis)
+     *
+     * @return the globally online leaders
+     */
+    public List<ClanPlayer> getGlobalOnlineLeaders() {
+        SimpleClans plugin = SimpleClans.getInstance();
+        return getLeaders().stream()
+                .filter(leader -> {
+                    // Check local first
+                    if (leader.toPlayer() != null) {
+                        return true;
+                    }
+                    // Check global via proxy manager
+                    if (plugin.getProxyManager() != null) {
+                        return plugin.getProxyManager().isOnline(leader.getName());
+                    }
+                    return false;
+                })
+                .collect(Collectors.toList());
     }
 
     /**

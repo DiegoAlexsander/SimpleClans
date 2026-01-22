@@ -658,12 +658,19 @@ public final class StorageManager {
                                 clanReSync.setLastUsed(clanDB.getLastUsed());
                                 clanReSync.setBalance(BankOperator.INTERNAL, ClanBalanceUpdateEvent.Cause.LOADING, BankLogger.Operation.SET, clanDB.getBalance());
                                 cp.setClan(clanReSync);
-                            } else {
+                                // Add player to clan's member list
+                                clanReSync.importMember(cp);
+                            } else if (clanDB != null) {
                                 plugin.getClanManager().importClan(clanDB);
                                 clanDB.validateWarring();
                                 Clan newClan = plugin.getClanManager().getClan(clanDB.getTag());
                                 cp.setClan(newClan);
+                                // Add player to clan's member list
+                                if (newClan != null) {
+                                    newClan.importMember(cp);
+                                }
                             }
+                            // If clanDB is null, the clan will be loaded when its update notification arrives
                         }
 
                         out = cp;
@@ -682,11 +689,18 @@ public final class StorageManager {
 
     /**
      * Insert a clan into the database
-     *
      */
     public void insertClan(Clan clan) {
-        plugin.getProxyManager().sendUpdate(clan);
+        insertClan(clan, null);
+    }
 
+    /**
+     * Insert a clan into the database with optional callback
+     *
+     * @param clan clan to insert
+     * @param onComplete callback to run after successful insert (runs on same thread as insert)
+     */
+    public void insertClan(Clan clan, @Nullable Runnable onComplete) {
         String query = "INSERT INTO `" + getPrefixedTable("clans") + "` (`banner`, `ranks`, `description`, `fee_enabled`, `fee_value`, `verified`, `tag`," +
                 " `color_tag`, `name`, `friendly_fire`, `founded`, `last_used`, `packed_allies`, `packed_rivals`, " +
                 "`packed_bb`, `cape_url`, `flags`, `balance`) ";
@@ -709,7 +723,18 @@ public final class StorageManager {
         							+ Helper.escapeQuotes(clan.getCapeUrl()) + "','"
         							+ Helper.escapeQuotes(clan.getFlags()) + "','"
         							+ Helper.escapeQuotes(String.valueOf(clan.getBalance())) + "');";
-        core.executeUpdate(query + values);
+        
+        // Execute with callback to notify other servers AFTER the insert is complete
+        core.executeUpdateWithCallback(query + values, () -> {
+            // Notify other servers via Redis about new clan (after DB insert completes)
+            if (plugin.getRedisManager() != null && plugin.getRedisManager().isInitialized()) {
+                plugin.getRedisManager().invalidate("clan:new", clan.getTag());
+            }
+            // Run additional callback if provided
+            if (onComplete != null) {
+                onComplete.run();
+            }
+        });
     }
 
     /**
@@ -747,7 +772,9 @@ public final class StorageManager {
      */
     public void updatePlayerName(final @NotNull ClanPlayer cp) {
         String query = "UPDATE `" + getPrefixedTable("players") + "` SET `name` = '" + cp.getName() + "' WHERE uuid = '" + cp.getUniqueId() + "';";
-        core.executeUpdate(query);
+        core.executeUpdateWithCallback(query, () -> {
+            plugin.getProxyManager().sendUpdate(cp);
+        });
     }
 
     /**
@@ -769,14 +796,19 @@ public final class StorageManager {
         if (updateLastUsed) {
             clan.updateLastUsed();
         }
-        plugin.getProxyManager().sendUpdate(clan);
-        if (plugin.getSettingsManager().is(PERFORMANCE_SAVE_PERIODICALLY)) {
+        
+        // When Redis is enabled, always save immediately to ensure data is in DB before notifying other servers
+        boolean forceImmediateSave = plugin.getRedisManager() != null && plugin.getRedisManager().isInitialized();
+        
+        if (plugin.getSettingsManager().is(PERFORMANCE_SAVE_PERIODICALLY) && !forceImmediateSave) {
             modifiedClans.add(clan);
             return;
         }
         try (PreparedStatement st = prepareUpdateClanStatement(core.getConnection())) {
             setValues(st, clan);
             st.executeUpdate();
+            // Notify AFTER saving to database
+            plugin.getProxyManager().sendUpdate(clan);
         } catch (SQLException ex) {
             plugin.getLogger().log(Level.SEVERE, String.format("Error updating Clan %s", clan.getTag()), ex);
         }
@@ -814,27 +846,49 @@ public final class StorageManager {
      * Delete a clan from the database
      */
     public void deleteClan(Clan clan) {
-        plugin.getProxyManager().sendDelete(clan);
         String query = "DELETE FROM `" + getPrefixedTable("clans") + "` WHERE tag = '" + clan.getTag() + "';";
-        core.executeUpdate(query);
+        core.executeUpdateWithCallback(query, () -> {
+            plugin.getProxyManager().sendDelete(clan);
+        });
     }
 
     /**
-     * Insert a clan player into the database
-     *
+     * Insert a clan player into the database.
+     * Uses INSERT ... ON DUPLICATE KEY UPDATE for MySQL to handle multi-server scenarios
+     * where the player may already exist from another server.
      */
     public void insertClanPlayer(ClanPlayer cp) {
-        plugin.getProxyManager().sendUpdate(cp);
-
-        String query = "INSERT INTO `" + getPrefixedTable("players") + "` (`uuid`, `name`, `leader`, `tag`, `friendly_fire`, `neutral_kills`, " +
-                "`rival_kills`, `civilian_kills`, `deaths`, `last_seen`, `join_date`, `packed_past_clans`, `flags`) ";
-        String values = "VALUES ('" + cp.getUniqueId().toString() + "', '" + cp.getName() + "',"
-                + (cp.isLeader() ? 1 : 0) + ",'" + Helper.escapeQuotes(cp.getTag()) + "',"
-                + (cp.isFriendlyFire() ? 1 : 0) + "," + cp.getNeutralKills() + "," + cp.getRivalKills()
-                + "," + cp.getCivilianKills() + "," + cp.getDeaths() + ",'" + cp.getLastSeen() + "',' "
-                + cp.getJoinDate() + "','" + Helper.escapeQuotes(cp.getPackedPastClans()) + "','"
-                + Helper.escapeQuotes(cp.getFlags()) + "');";
-        core.executeUpdate(query + values);
+        String table = getPrefixedTable("players");
+        
+        // Callback to notify via ProxyManager AFTER the insert completes
+        Runnable notifyOtherServers = () -> {
+            plugin.getProxyManager().sendUpdate(cp);
+        };
+        
+        if (core instanceof MySQLCore) {
+            // MySQL: Use INSERT ... ON DUPLICATE KEY UPDATE to handle race conditions in multi-server
+            String query = "INSERT INTO `" + table + "` (`uuid`, `name`, `leader`, `tag`, `friendly_fire`, `neutral_kills`, " +
+                    "`rival_kills`, `civilian_kills`, `deaths`, `last_seen`, `join_date`, `packed_past_clans`, `flags`) " +
+                    "VALUES ('" + cp.getUniqueId().toString() + "', '" + cp.getName() + "'," +
+                    (cp.isLeader() ? 1 : 0) + ",'" + Helper.escapeQuotes(cp.getTag()) + "'," +
+                    (cp.isFriendlyFire() ? 1 : 0) + "," + cp.getNeutralKills() + "," + cp.getRivalKills() +
+                    "," + cp.getCivilianKills() + "," + cp.getDeaths() + ",'" + cp.getLastSeen() + "',' " +
+                    cp.getJoinDate() + "','" + Helper.escapeQuotes(cp.getPackedPastClans()) + "','" +
+                    Helper.escapeQuotes(cp.getFlags()) + "') " +
+                    "ON DUPLICATE KEY UPDATE `name` = VALUES(`name`), `last_seen` = VALUES(`last_seen`);";
+            core.executeUpdateWithCallback(query, notifyOtherServers);
+        } else {
+            // SQLite: Use INSERT OR IGNORE (simpler, doesn't update on conflict)
+            String query = "INSERT OR IGNORE INTO `" + table + "` (`uuid`, `name`, `leader`, `tag`, `friendly_fire`, `neutral_kills`, " +
+                    "`rival_kills`, `civilian_kills`, `deaths`, `last_seen`, `join_date`, `packed_past_clans`, `flags`) " +
+                    "VALUES ('" + cp.getUniqueId().toString() + "', '" + cp.getName() + "'," +
+                    (cp.isLeader() ? 1 : 0) + ",'" + Helper.escapeQuotes(cp.getTag()) + "'," +
+                    (cp.isFriendlyFire() ? 1 : 0) + "," + cp.getNeutralKills() + "," + cp.getRivalKills() +
+                    "," + cp.getCivilianKills() + "," + cp.getDeaths() + ",'" + cp.getLastSeen() + "',' " +
+                    cp.getJoinDate() + "','" + Helper.escapeQuotes(cp.getPackedPastClans()) + "','" +
+                    Helper.escapeQuotes(cp.getFlags()) + "');";
+            core.executeUpdateWithCallback(query, notifyOtherServers);
+        }
     }
 
     /**
@@ -857,14 +911,19 @@ public final class StorageManager {
      */
     public void updateClanPlayer(ClanPlayer cp) {
         cp.updateLastSeen();
-        plugin.getProxyManager().sendUpdate(cp);
-        if (plugin.getSettingsManager().is(PERFORMANCE_SAVE_PERIODICALLY)) {
+        
+        // When Redis is enabled, always save immediately to ensure data is in DB before notifying other servers
+        boolean forceImmediateSave = plugin.getRedisManager() != null && plugin.getRedisManager().isInitialized();
+        
+        if (plugin.getSettingsManager().is(PERFORMANCE_SAVE_PERIODICALLY) && !forceImmediateSave) {
             modifiedClanPlayers.add(cp);
             return;
         }
         try (PreparedStatement st = prepareUpdateClanPlayerStatement(core.getConnection())) {
             setValues(st, cp);
             st.executeUpdate();
+            // Notify AFTER saving to database
+            plugin.getProxyManager().sendUpdate(cp);
         } catch (SQLException ex) {
             plugin.getLogger().log(Level.SEVERE, String.format("Error updating ClanPlayer %s", cp.getName()), ex);
         }
@@ -905,9 +964,11 @@ public final class StorageManager {
             clan.addBbWithoutSaving(MessageFormat.format(lang("has.been.purged"), cp.getName()));
             updateClan(clan, false);
         }
-        plugin.getProxyManager().sendDelete(cp);
+        
         String query = "DELETE FROM `" + getPrefixedTable("players") + "` WHERE uuid = '" + cp.getUniqueId() + "';";
-        core.executeUpdate(query);
+        core.executeUpdateWithCallback(query, () -> {
+            plugin.getProxyManager().sendDelete(cp);
+        });
         deleteKills(cp.getUniqueId());
     }
 
@@ -1301,4 +1362,120 @@ public final class StorageManager {
             plugin.getLogger().log(Level.SEVERE, "Error saving modified Clans:", ex);
         }
     }
+
+    // ========================================
+    // Redis Multi-Server Reload Methods
+    // ========================================
+
+    /**
+     * Reloads a single clan from the database, updating the in-memory instance.
+     * Used by Redis invalidation to refresh cached clan data.
+     *
+     * @param existingClan The clan instance to update with database values
+     */
+    public void reloadClan(@NotNull Clan existingClan) {
+        Clan fromDb = retrieveOneClan(existingClan.getTag());
+        
+        if (fromDb == null) {
+            plugin.getLogger().warning("[Redis] Could not reload clan from database: " + existingClan.getTag());
+            return;
+        }
+
+        // Update existing clan with database values
+        existingClan.setFlags(fromDb.getFlags());
+        existingClan.setVerified(fromDb.isVerified());
+        existingClan.setFriendlyFire(fromDb.isFriendlyFire());
+        existingClan.setColorTag(fromDb.getColorTag());
+        existingClan.setName(fromDb.getName());
+        existingClan.setDescription(fromDb.getDescription());
+        existingClan.setPackedAllies(fromDb.getPackedAllies());
+        existingClan.setPackedRivals(fromDb.getPackedRivals());
+        existingClan.setPackedBb(fromDb.getPackedBb());
+        existingClan.setFounded(fromDb.getFounded());
+        existingClan.setLastUsed(fromDb.getLastUsed());
+        existingClan.setBalance(BankOperator.INTERNAL, ClanBalanceUpdateEvent.Cause.LOADING, BankLogger.Operation.SET, fromDb.getBalance());
+        existingClan.setMemberFee(fromDb.getMemberFee());
+        existingClan.setMemberFeeEnabled(fromDb.isMemberFeeEnabled());
+        existingClan.setRanks(fromDb.getRanks());
+        existingClan.setDefaultRank(fromDb.getDefaultRank());
+        existingClan.setBanner(fromDb.getBanner());
+        
+        // Reload all members for this clan
+        reloadClanMembers(existingClan);
+    }
+
+    /**
+     * Reloads all members of a clan from the database.
+     * Called after reloading a clan to ensure member list is up-to-date.
+     *
+     * @param clan The clan whose members should be reloaded
+     */
+    private void reloadClanMembers(@NotNull Clan clan) {
+        List<ClanPlayer> allPlayers = retrieveClanPlayers();
+        
+        // Clear current members
+        clan.getMembers().clear();
+        
+        // Re-import members for this clan
+        for (ClanPlayer cp : allPlayers) {
+            if (cp.getClan() != null && cp.getClan().getTag().equals(clan.getTag())) {
+                clan.importMember(cp);
+                plugin.getClanManager().importClanPlayer(cp);
+            }
+        }
+    }
+
+    /**
+     * Reloads a single clan player from the database, updating the in-memory instance.
+     * Used by Redis invalidation to refresh cached player data.
+     *
+     * @param existingCp The ClanPlayer instance to update with database values
+     */
+    public void reloadClanPlayer(@NotNull ClanPlayer existingCp) {
+        ClanPlayer fromDb = retrieveOneClanPlayer(existingCp.getUniqueId());
+        
+        if (fromDb == null) {
+            plugin.getLogger().warning("[Redis] Could not reload player from database: " + existingCp.getUniqueId());
+            return;
+        }
+
+        // Update existing ClanPlayer with database values
+        existingCp.setFlags(fromDb.getFlags());
+        existingCp.setName(fromDb.getName());
+        existingCp.setLeader(fromDb.isLeader());
+        existingCp.setFriendlyFire(fromDb.isFriendlyFire());
+        existingCp.setNeutralKills(fromDb.getNeutralKills());
+        existingCp.setRivalKills(fromDb.getRivalKills());
+        existingCp.setCivilianKills(fromDb.getCivilianKills());
+        existingCp.setAllyKills(fromDb.getAllyKills());
+        existingCp.setDeaths(fromDb.getDeaths());
+        existingCp.setLastSeen(fromDb.getLastSeen());
+        existingCp.setJoinDate(fromDb.getJoinDate());
+        existingCp.setPackedPastClans(fromDb.getPackedPastClans());
+        existingCp.setTrusted(fromDb.isTrusted());
+        existingCp.setResignTimes(fromDb.getResignTimes());
+        existingCp.setLocale(fromDb.getLocale());
+        
+        // Handle clan association changes
+        Clan oldClan = existingCp.getClan();
+        Clan newClan = fromDb.getClan();
+        
+        if (newClan == null && oldClan != null) {
+            // Player left clan
+            oldClan.removeMember(existingCp.getUniqueId());
+            existingCp.setClan(null);
+        } else if (newClan != null) {
+            // Player joined or changed clan
+            Clan localClan = plugin.getClanManager().getClan(newClan.getTag());
+            if (localClan != null) {
+                existingCp.setClan(localClan);
+                // Always update the member in the clan's list to ensure same instance with updated values
+                localClan.importMember(existingCp);
+            }
+        } else if (oldClan != null) {
+            // Player stayed in the same clan - update the member reference to ensure sync
+            oldClan.importMember(existingCp);
+        }
+    }
 }
+

@@ -49,7 +49,7 @@ public class ClanCommands extends BaseCommand {
     public void startWar(Player player, ClanPlayer requester, Clan requestClan, @Conditions("can_war_target") @Name("clan") ClanInput targetClanInput) {
         Clan targetClan = targetClanInput.getClan();
 
-        List<ClanPlayer> onlineLeaders = Helper.stripOffLinePlayers(requestClan.getLeaders());
+        List<ClanPlayer> onlineLeaders = Helper.stripOffLinePlayersGlobal(requestClan.getLeaders());
 
         if (settings.is(WAR_START_REQUEST_ENABLED)) {
             if (!onlineLeaders.isEmpty()) {
@@ -133,24 +133,32 @@ public class ClanCommands extends BaseCommand {
     @Description("{@@command.description.invite}")
     public void invite(Player sender, ClanPlayer cp, Clan clan,
                        @Conditions("not_banned|not_in_clan|online:ignore_vanished") @Name("player") ClanPlayerInput invited) {
-        if (!invited.getClanPlayer().isInviteEnabled()) {
+        ClanPlayer invitedCp = invited.getClanPlayer();
+        
+        if (!invitedCp.isInviteEnabled()) {
             ChatBlock.sendMessage(sender, RED + lang("invitedplayer.invite.off", sender));
             return;
         }
-        Player invitedPlayer = invited.getClanPlayer().toPlayer();
-        if (invitedPlayer == null) return;
-        if (!permissions.has(invitedPlayer, "simpleclans.member.can-join")) {
+        
+        // Get player object - may be null if on another server
+        Player invitedPlayer = invitedCp.toPlayer();
+        String invitedPlayerName = invitedCp.getName();
+        
+        // Check permission - for remote players, we assume they have permission
+        // (the remote server will validate when they accept)
+        if (invitedPlayer != null && !permissions.has(invitedPlayer, "simpleclans.member.can-join")) {
             ChatBlock.sendMessage(sender, RED +
                     lang("the.player.doesn.t.not.have.the.permissions.to.join.clans", sender));
             return;
         }
-        if (invitedPlayer.getUniqueId().equals(sender.getUniqueId())) {
+        
+        if (invitedCp.getUniqueId().equals(sender.getUniqueId())) {
             ChatBlock.sendMessage(sender, RED + lang("you.cannot.invite.yourself", sender));
             return;
         }
         
         // Check global cooldown first (applies to joining ANY clan)
-        long minutesBeforeJoinAny = cm.getMinutesBeforeJoinAnyClan(invited.getClanPlayer());
+        long minutesBeforeJoinAny = cm.getMinutesBeforeJoinAnyClan(invitedCp);
         if (minutesBeforeJoinAny != 0) {
             ChatBlock.sendMessage(sender, RED +
                     lang("the.player.must.wait.before.joining.any.clan", sender, minutesBeforeJoinAny));
@@ -158,7 +166,7 @@ public class ClanCommands extends BaseCommand {
         }
         
         // Check specific clan rejoin cooldown
-        long minutesBeforeRejoin = cm.getMinutesBeforeRejoin(invited.getClanPlayer(), clan);
+        long minutesBeforeRejoin = cm.getMinutesBeforeRejoin(invitedCp, clan);
         if (minutesBeforeRejoin != 0) {
             ChatBlock.sendMessage(sender, RED +
                     lang("the.player.must.wait.0.before.joining.your.clan.again", sender, minutesBeforeRejoin));
@@ -173,9 +181,9 @@ public class ClanCommands extends BaseCommand {
             return;
         }
 
-        requestManager.addInviteRequest(cp, invitedPlayer.getName(), clan);
+        requestManager.addInviteRequest(cp, invitedPlayerName, clan);
         ChatBlock.sendMessage(sender, AQUA + lang("has.been.asked.to.join",
-                sender, invitedPlayer.getName(), clan.getName()));
+                sender, invitedPlayerName, clan.getName()));
     }
 
     @Subcommand("%fee %check")
@@ -320,7 +328,7 @@ public class ClanCommands extends BaseCommand {
             }
         }
 
-        List<ClanPlayer> onlineLeaders = Helper.stripOffLinePlayers(issuerClan.getLeaders());
+        List<ClanPlayer> onlineLeaders = Helper.stripOffLinePlayersGlobal(issuerClan.getLeaders());
         if (onlineLeaders.isEmpty()) {
             ChatBlock.sendMessage(player, RED + lang("at.least.one.leader.accept.the.alliance",
                     player));

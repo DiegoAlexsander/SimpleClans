@@ -14,6 +14,8 @@ import net.sacredlabyrinth.phaed.simpleclans.managers.ClanManager;
 import net.sacredlabyrinth.phaed.simpleclans.managers.PermissionsManager;
 import net.sacredlabyrinth.phaed.simpleclans.managers.SettingsManager;
 import net.sacredlabyrinth.phaed.simpleclans.managers.StorageManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.RedisManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.lock.DistributedLock;
 import net.sacredlabyrinth.phaed.simpleclans.ui.InventoryController;
 import net.sacredlabyrinth.phaed.simpleclans.utils.ChatUtils;
 import org.bukkit.Bukkit;
@@ -276,8 +278,23 @@ public class StaffCommands extends BaseCommand {
     @CommandCompletion("@clans")
     @CommandPermission("simpleclans.mod.disband")
     @Description("{@@command.description.mod.disband}")
-    public void disband(CommandSender sender, @Name("clan") ClanInput clan) {
-        clan.getClan().disband(sender, true, true);
+    public void disband(CommandSender sender, @Name("clan") ClanInput clanInput) {
+        Clan clan = clanInput.getClan();
+        
+        // Try to acquire distributed lock for disband operation
+        RedisManager redis = SimpleClans.getInstance().getRedisManager();
+        if (redis != null && redis.isInitialized()) {
+            try (DistributedLock lock = redis.acquireDisbandLock(clan.getTag())) {
+                if (!lock.tryAcquire()) {
+                    ChatBlock.sendMessage(sender, RED + lang("disband.operation.in.progress", sender));
+                    return;
+                }
+                clan.disband(sender, true, true);
+            }
+        } else {
+            // No Redis, proceed without lock
+            clan.disband(sender, true, true);
+        }
     }
 
     @Subcommand("%admin %promote")

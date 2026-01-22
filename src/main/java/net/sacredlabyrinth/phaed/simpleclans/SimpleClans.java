@@ -13,6 +13,8 @@ import net.sacredlabyrinth.phaed.simpleclans.migrations.ChatFormatMigration;
 import net.sacredlabyrinth.phaed.simpleclans.migrations.LanguageMigration;
 import net.sacredlabyrinth.phaed.simpleclans.proxy.BungeeManager;
 import net.sacredlabyrinth.phaed.simpleclans.proxy.ProxyManager;
+import net.sacredlabyrinth.phaed.simpleclans.proxy.RedisProxyManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.RedisManager;
 import net.sacredlabyrinth.phaed.simpleclans.tasks.*;
 import net.sacredlabyrinth.phaed.simpleclans.ui.InventoryController;
 import net.sacredlabyrinth.phaed.simpleclans.utils.ChatUtils;
@@ -60,6 +62,7 @@ public class SimpleClans extends JavaPlugin {
     private ProtectionManager protectionManager;
     private ChatManager chatManager;
     private ProxyManager proxyManager;
+    private RedisManager redisManager;
     private boolean hasUUID;
     private static final Pattern ACF_PLACEHOLDER_PATTERN = Pattern.compile("\\{(?<key>[a-zA-Z]+?)}");
 
@@ -110,8 +113,9 @@ public class SimpleClans extends JavaPlugin {
         permissionsManager = new PermissionsManager();
         requestManager = new RequestManager();
         clanManager = new ClanManager();
-        proxyManager = new BungeeManager(this);
         storageManager = new StorageManager();
+        initializeRedis();
+        initializeProxyManager();
         teleportManager = new TeleportManager();
         protectionManager = new ProtectionManager();
         protectionManager.registerListeners();
@@ -133,6 +137,8 @@ public class SimpleClans extends JavaPlugin {
     private void logStatus() {
         getLogger().info("Multithreading: " + settingsManager.is(PERFORMANCE_USE_THREADS));
         getLogger().info("BungeeCord: " + settingsManager.is(PERFORMANCE_USE_BUNGEECORD));
+        getLogger().info("Redis: " + (redisManager != null && redisManager.isInitialized() 
+                ? "enabled (server-id: " + redisManager.getServerId() + ")" : "disabled"));
         getLogger().info("HEX support: " + ChatUtils.HEX_COLOR_SUPPORT);
         getLogger().info("Help us translate SimpleClans to your language! " +
                 "Access https://crowdin.com/project/simpleclans/");
@@ -186,6 +192,7 @@ public class SimpleClans extends JavaPlugin {
         }
         if (getSettingsManager().is(ECONOMY_MEMBER_FEE_ENABLED)) {
             new CollectFeeTask().start();
+            new FeeWarningTask().start();
         }
         if (getSettingsManager().is(ECONOMY_UPKEEP_ENABLED)) {
             new CollectUpkeepTask().start();
@@ -198,12 +205,59 @@ public class SimpleClans extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // Shutdown Redis first
+        if (redisManager != null && redisManager.isInitialized()) {
+            redisManager.shutdown();
+        }
+        
         if (getSettingsManager().is(PERFORMANCE_SAVE_PERIODICALLY)) {
             getStorageManager().saveModified();
         }
         getStorageManager().closeConnection();
         getPermissionsManager().savePermissions();
         getSettingsManager().loadAndSave();
+    }
+
+    /**
+     * Initializes Redis for multi-server synchronization.
+     * Falls back to standalone mode if Redis is disabled or connection fails.
+     */
+    private void initializeRedis() {
+        redisManager = new RedisManager(this);
+        try {
+            redisManager.initialize();
+            if (redisManager.isInitialized()) {
+                getLogger().info("Redis multi-server sync enabled");
+            }
+        } catch (RedisManager.RedisConnectionException e) {
+            getLogger().warning("Failed to initialize Redis: " + e.getMessage());
+            getLogger().warning("Running in standalone mode (no multi-server sync)");
+        }
+    }
+
+    /**
+     * Initializes the proxy manager.
+     * Uses RedisProxyManager if Redis is enabled and initialized,
+     * otherwise falls back to BungeeManager.
+     */
+    private void initializeProxyManager() {
+        if (redisManager != null && redisManager.isInitialized()) {
+            // Use Redis as the proxy backend
+            proxyManager = new RedisProxyManager(this, redisManager);
+            getLogger().info("Using Redis for cross-server communication");
+            
+            // Request online players sync from other servers and publish our own players
+            getServer().getScheduler().runTaskLater(this, () -> {
+                redisManager.requestPlayersSync();
+                redisManager.publishLocalPlayersSync();
+            }, 20L); // Wait 1 second for everything to initialize
+        } else {
+            // Fall back to BungeeCord
+            proxyManager = new BungeeManager(this);
+            if (settingsManager.is(SettingsManager.ConfigField.PERFORMANCE_USE_BUNGEECORD)) {
+                getLogger().info("Using BungeeCord for cross-server communication");
+            }
+        }
     }
 
     /**
@@ -256,6 +310,17 @@ public class SimpleClans extends JavaPlugin {
 
     public ProxyManager getProxyManager() {
         return proxyManager;
+    }
+
+    /**
+     * Returns the Redis manager for multi-server synchronization.
+     * May return null if Redis is disabled or not initialized.
+     * 
+     * @return the RedisManager or null
+     */
+    @Nullable
+    public RedisManager getRedisManager() {
+        return redisManager != null && redisManager.isInitialized() ? redisManager : null;
     }
 
     public BankLogger getBankLogger() {

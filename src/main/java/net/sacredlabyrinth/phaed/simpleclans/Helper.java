@@ -302,16 +302,41 @@ public final class Helper {
     }
 
     /**
-     * Remove offline players from a ClanPlayer array
+     * Remove offline players from a ClanPlayer array.
+     * Only considers players online on the local server.
      *
-     * @param in
-     * @return
+     * @param in list of ClanPlayers
+     * @return list of online ClanPlayers
      */
     public static List<ClanPlayer> stripOffLinePlayers(List<ClanPlayer> in) {
         List<ClanPlayer> out = new ArrayList<>();
 
         for (ClanPlayer cp : in) {
             if (cp.toPlayer() != null) {
+                out.add(cp);
+            }
+        }
+
+        return out;
+    }
+
+    /**
+     * Remove offline players from a ClanPlayer array.
+     * Considers players online on any server (local or remote via Redis).
+     *
+     * @param in list of ClanPlayers
+     * @return list of online ClanPlayers (local or remote)
+     */
+    public static List<ClanPlayer> stripOffLinePlayersGlobal(List<ClanPlayer> in) {
+        List<ClanPlayer> out = new ArrayList<>();
+        SimpleClans plugin = SimpleClans.getInstance();
+
+        for (ClanPlayer cp : in) {
+            // Check local first
+            if (cp.toPlayer() != null) {
+                out.add(cp);
+            } else if (plugin.getProxyManager() != null && plugin.getProxyManager().isOnline(cp.getName())) {
+                // Check remote servers
                 out.add(cp);
             }
         }

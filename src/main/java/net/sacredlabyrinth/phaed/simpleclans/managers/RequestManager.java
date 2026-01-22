@@ -4,6 +4,9 @@ import net.sacredlabyrinth.phaed.simpleclans.*;
 import net.sacredlabyrinth.phaed.simpleclans.events.RequestEvent;
 import net.sacredlabyrinth.phaed.simpleclans.events.RequestFinishedEvent;
 import net.sacredlabyrinth.phaed.simpleclans.events.WarEndEvent;
+import net.sacredlabyrinth.phaed.simpleclans.redis.RedisManager;
+import net.sacredlabyrinth.phaed.simpleclans.redis.pubsub.handlers.RequestHandler;
+import net.sacredlabyrinth.phaed.simpleclans.redis.request.RedisRequestStorage;
 import net.sacredlabyrinth.phaed.simpleclans.utils.ChatUtils;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
@@ -33,25 +36,250 @@ public final class RequestManager {
         askerTask();
     }
 
+    /**
+     * Checks if Redis is available for request storage.
+     *
+     * @return true if Redis is initialized
+     */
+    private boolean isRedisEnabled() {
+        RedisManager redisManager = plugin.getRedisManager();
+        return redisManager != null && redisManager.isInitialized();
+    }
+
+    /**
+     * Gets the Redis request storage if available.
+     *
+     * @return the storage, or null if Redis is disabled
+     */
+    @Nullable
+    private RedisRequestStorage getRedisStorage() {
+        RedisManager redisManager = plugin.getRedisManager();
+        if (redisManager != null && redisManager.isInitialized()) {
+            return redisManager.getRequestStorage();
+        }
+        return null;
+    }
+
+    /**
+     * Publishes a request notification to other servers via Redis.
+     *
+     * @param key     the request key
+     * @param request the request
+     */
+    private void publishNewRequest(@NotNull String key, @NotNull Request request) {
+        RedisManager redisManager = plugin.getRedisManager();
+        if (redisManager != null && redisManager.isInitialized()) {
+            // For INVITE, DEMOTE, and PROMOTE, the target is a player name
+            String targetPlayer = null;
+            if (request.getType() == ClanRequest.INVITE || 
+                request.getType() == ClanRequest.DEMOTE || 
+                request.getType() == ClanRequest.PROMOTE) {
+                targetPlayer = request.getTarget();
+            }
+            // For inter-clan requests, the target is the clan tag that should receive notifications
+            String targetClanTag = isInterClanRequest(request.getType()) ? request.getTarget() : null;
+            String message = RequestHandler.createNewRequestMessage(
+                    key,
+                    request.getType(),
+                    request.getClan() != null ? request.getClan().getTag() : null,
+                    targetClanTag,
+                    targetPlayer,
+                    request.getMsg()
+            );
+            redisManager.publish(RedisManager.CHANNEL_REQUEST, message);
+        }
+    }
+    
+    /**
+     * Checks if the request type is an inter-clan request (involves two clans).
+     */
+    private boolean isInterClanRequest(ClanRequest type) {
+        return type == ClanRequest.CREATE_ALLY ||
+               type == ClanRequest.BREAK_RIVALRY ||
+               type == ClanRequest.START_WAR ||
+               type == ClanRequest.END_WAR;
+    }
+
+    /**
+     * Publishes a vote notification to other servers via Redis.
+     *
+     * @param key       the request key
+     * @param voterName the voter's name
+     * @param vote      the vote result
+     */
+    private void publishVote(@NotNull String key, @NotNull String voterName, @NotNull VoteResult vote) {
+        RedisManager redisManager = plugin.getRedisManager();
+        if (redisManager != null && redisManager.isInitialized()) {
+            String message = RequestHandler.createVoteMessage(key, voterName, vote);
+            redisManager.publish(RedisManager.CHANNEL_REQUEST, message);
+        }
+    }
+
+    /**
+     * Publishes a request removal to other servers via Redis.
+     *
+     * @param key    the request key
+     * @param reason the removal reason
+     */
+    private void publishRemoval(@NotNull String key, @NotNull String reason) {
+        RedisManager redisManager = plugin.getRedisManager();
+        if (redisManager != null && redisManager.isInitialized()) {
+            String message = RequestHandler.createRemoveMessage(key, reason);
+            redisManager.publish(RedisManager.CHANNEL_REQUEST, message);
+        }
+    }
+
+    /**
+     * Stores a request in Redis if enabled.
+     *
+     * @param key     the request key
+     * @param request the request
+     */
+    private void storeInRedis(@NotNull String key, @NotNull Request request) {
+        RedisRequestStorage storage = getRedisStorage();
+        if (storage != null) {
+            storage.storeRequest(key, request);
+            publishNewRequest(key, request);
+        }
+    }
+
+    /**
+     * Updates a request in Redis if enabled (e.g., after a vote).
+     *
+     * @param key     the request key
+     * @param request the request with updated votes
+     */
+    private void updateRequestInRedis(@NotNull String key, @NotNull Request request) {
+        RedisRequestStorage storage = getRedisStorage();
+        if (storage != null) {
+            storage.updateRequest(key, request);
+        }
+    }
+
+    /**
+     * Removes a request from Redis if enabled.
+     *
+     * @param key    the request key
+     * @param reason the removal reason
+     */
+    private void removeFromRedis(@NotNull String key, @NotNull String reason) {
+        RedisRequestStorage storage = getRedisStorage();
+        if (storage != null) {
+            storage.removeRequest(key);
+            publishRemoval(key, reason);
+        }
+    }
+
+    /**
+     * Gets a request from local memory or Redis.
+     *
+     * @param key the request key
+     * @return the request, or null if not found
+     */
+    @Nullable
+    private Request getRequest(@NotNull String key) {
+        // Check local first
+        Request req = requests.get(key);
+        if (req != null) {
+            return req;
+        }
+        // Check Redis if enabled
+        RedisRequestStorage storage = getRedisStorage();
+        if (storage != null) {
+            return storage.getRequest(key);
+        }
+        return null;
+    }
+
+    /**
+     * Fetches the latest request state from Redis, updating the local cache.
+     * This is used to synchronize vote states between servers.
+     *
+     * @param key the request key
+     * @return the request from Redis, or null if not found
+     */
+    @Nullable
+    private Request fetchRequestFromRedis(@NotNull String key) {
+        RedisRequestStorage storage = getRedisStorage();
+        if (storage != null) {
+            Request req = storage.getRequest(key);
+            if (req != null) {
+                // Update local cache with Redis state
+                requests.put(key, req);
+            }
+            return req;
+        }
+        return null;
+    }
+
+    /**
+     * Applies a vote received from another server via Redis.
+     * This updates the local request state and processes results if voting is finished.
+     *
+     * @param requestKey the request key
+     * @param voterName  the voter's name
+     * @param vote       the vote result
+     */
+    public void applyRemoteVote(@NotNull String requestKey, @NotNull String voterName, @NotNull VoteResult vote) {
+        // Fetch the latest state from Redis (which includes the remote vote)
+        Request req = fetchRequestFromRedis(requestKey);
+        
+        if (req == null) {
+            // Try local request as fallback
+            req = requests.get(requestKey);
+            if (req != null) {
+                // Apply vote to local request
+                req.vote(voterName, vote);
+            } else {
+                return;
+            }
+        }
+        
+        // NOTE: We do NOT call processResults() here because the server where the vote
+        // was cast already processed the results. We only update local state.
+        // The request will be removed when we receive the removal notification.
+    }
+
+    /**
+     * Removes a request from local memory only.
+     * Called when receiving a remove notification from another server.
+     *
+     * @param key the request key
+     */
+    public void removeLocalRequest(@NotNull String key) {
+        requests.remove(key.toLowerCase());
+    }
+
     @SuppressWarnings("BooleanMethodIsAlwaysInverted")
     public boolean hasRequest(String tag) {
-        return requests.containsKey(tag);
+        // Check local first
+        if (requests.containsKey(tag)) {
+            return true;
+        }
+        // Check Redis if enabled
+        RedisRequestStorage storage = getRedisStorage();
+        if (storage != null) {
+            return storage.hasRequest(tag);
+        }
+        return false;
     }
 
     public void addDemoteRequest(ClanPlayer requester, String demotedName, Clan clan) {
-        if (requests.containsKey(clan.getTag())) {
+        if (hasRequest(clan.getTag())) {
             return;
         }
         String msg = MessageFormat.format(lang("asking.for.the.demotion"), requester.getName(), demotedName);
 
         ClanPlayer demotedTp = plugin.getClanManager().getAnyClanPlayer(demotedName);
 
-        List<ClanPlayer> acceptors = Helper.stripOffLinePlayers(clan.getLeaders());
+        List<ClanPlayer> acceptors = Helper.stripOffLinePlayersGlobal(clan.getLeaders());
         acceptors.remove(demotedTp);
 
         Request req = new Request(ClanRequest.DEMOTE, acceptors, requester, demotedName, clan, msg);
         req.vote(requester.getName(), VoteResult.ACCEPT);
-        requests.put(req.getClan().getTag(), req);
+        String key = req.getClan().getTag();
+        requests.put(key, req);
+        storeInRedis(key, req);
         ask(req);
     }
 
@@ -79,27 +307,29 @@ public final class RequestManager {
      * @param requester the clan player, who sent the request
      * @param request   the type of request, see: {@link ClanRequest}
      * @param target    the target which will be used in request processing
-     * @param key       the language key that would be translated and send the message to all leaders
+     * @param langKey   the language key that would be translated and send the message to all leaders
      * @param args      the language objects, requires in some language strings.
      * @throws IllegalArgumentException if passed incompatible request
      */
     public void requestAllLeaders(@NotNull ClanPlayer requester, @NotNull ClanRequest request,
-                                  @NotNull String target, @NotNull String key, @Nullable Object... args) {
+                                  @NotNull String target, @NotNull String langKey, @Nullable Object... args) {
         if (request.equals(ClanRequest.INVITE) || request.equals(ClanRequest.DEMOTE)) {
             throw new IllegalArgumentException("Unsupported request: " + request.name());
         }
 
         Clan clan = requester.getClan();
-        if (clan == null || requests.containsKey(clan.getTag())) {
+        if (clan == null || hasRequest(clan.getTag())) {
             return;
         }
 
-        String msg = lang(key, args);
-        List<ClanPlayer> acceptors = Helper.stripOffLinePlayers(clan.getLeaders());
+        String msg = lang(langKey, args);
+        List<ClanPlayer> acceptors = Helper.stripOffLinePlayersGlobal(clan.getLeaders());
 
         Request req = new Request(request, acceptors, requester, target, clan, msg);
-        requests.put(clan.getTag(), req);
+        String key = clan.getTag();
+        requests.put(key, req);
         req.vote(requester.getName(), VoteResult.ACCEPT);
+        storeInRedis(key, req);
 
         ask(req);
     }
@@ -112,108 +342,154 @@ public final class RequestManager {
      * @param clan        the Clan
      */
     public void addInviteRequest(ClanPlayer requester, String invitedName, Clan clan) {
-        if (requests.containsKey(invitedName.toLowerCase())) {
+        if (hasRequest(invitedName.toLowerCase())) {
             return;
         }
-        Player player = Bukkit.getPlayer(invitedName);
-        if (player == null) {
+        
+        // Check if player is online locally
+        Player localPlayer = Bukkit.getPlayer(invitedName);
+        
+        // Check if player is online on another server (via Redis)
+        final boolean isRemotePlayer;
+        if (localPlayer == null && isRedisEnabled()) {
+            isRemotePlayer = plugin.getProxyManager().isOnline(invitedName);
+        } else {
+            isRemotePlayer = false;
+        }
+        
+        // If player is neither local nor remote, abort
+        if (localPlayer == null && !isRemotePlayer) {
             return;
         }
 
-        String msg = lang("inviting.you.to.join", player, requester.getName(), clan.getName());
+        // For remote players, we need to get/create a locale context
+        // Use the requester's locale for the message since we don't have the target's locale
+        String msg = lang("inviting.you.to.join", requester.toPlayer(), requester.getName(), clan.getName());
         Request req = new Request(ClanRequest.INVITE, null, requester, invitedName, clan, msg);
-        requests.put(invitedName.toLowerCase(), req);
+        String key = invitedName.toLowerCase();
+        requests.put(key, req);
+        storeInRedis(key, req);
         ask(req);
     }
 
     public void addWarStartRequest(ClanPlayer requester, Clan warClan, Clan requestingClan) {
-        if (requests.containsKey(warClan.getTag())) {
+        if (hasRequest(warClan.getTag())) {
             return;
         }
         String msg = MessageFormat.format(lang("proposing.war"), requestingClan.getName(), ChatUtils.stripColors(warClan.getColorTag()));
 
-        List<ClanPlayer> acceptors = Helper.stripOffLinePlayers(warClan.getLeaders());
+        List<ClanPlayer> acceptors = Helper.stripOffLinePlayersGlobal(warClan.getLeaders());
         acceptors.remove(requester);
 
         Request req = new Request(ClanRequest.START_WAR, acceptors, requester, warClan.getTag(), requestingClan, msg);
-        requests.put(req.getTarget(), req);
+        String key = req.getTarget();
+        requests.put(key, req);
+        storeInRedis(key, req);
         ask(req);
     }
 
     public void addWarEndRequest(ClanPlayer requester, Clan warClan, Clan requestingClan) {
-        if (requests.containsKey(warClan.getTag())) {
+        if (hasRequest(warClan.getTag())) {
             return;
         }
         String msg = MessageFormat.format(lang("proposing.to.end.the.war"), requestingClan.getName(), ChatUtils.stripColors(warClan.getColorTag()));
 
-        List<ClanPlayer> acceptors = Helper.stripOffLinePlayers(warClan.getLeaders());
+        List<ClanPlayer> acceptors = Helper.stripOffLinePlayersGlobal(warClan.getLeaders());
         acceptors.remove(requester);
 
         Request req = new Request(ClanRequest.END_WAR, acceptors, requester, warClan.getTag(), requestingClan, msg);
-        requests.put(req.getTarget(), req);
+        String key = req.getTarget();
+        requests.put(key, req);
+        storeInRedis(key, req);
         ask(req);
     }
 
     public void addAllyRequest(ClanPlayer requester, Clan allyClan, Clan requestingClan) {
-        if (requests.containsKey(allyClan.getTag())) {
+        if (hasRequest(allyClan.getTag())) {
             return;
         }
         String msg = MessageFormat.format(lang("proposing.an.alliance"), requestingClan.getName(), ChatUtils.stripColors(allyClan.getColorTag()));
 
-        List<ClanPlayer> acceptors = Helper.stripOffLinePlayers(allyClan.getLeaders());
+        List<ClanPlayer> acceptors = Helper.stripOffLinePlayersGlobal(allyClan.getLeaders());
         acceptors.remove(requester);
 
         Request req = new Request(ClanRequest.CREATE_ALLY, acceptors, requester, allyClan.getTag(), requestingClan, msg);
-        requests.put(req.getTarget(), req);
+        String key = req.getTarget();
+        requests.put(key, req);
+        storeInRedis(key, req);
         ask(req);
     }
 
     public void addRivalryBreakRequest(ClanPlayer requester, Clan rivalClan, Clan requestingClan) {
-        if (requests.containsKey(rivalClan.getTag())) {
+        if (hasRequest(rivalClan.getTag())) {
             return;
         }
         String msg = MessageFormat.format(lang("proposing.to.end.the.rivalry"), requestingClan.getName(), ChatUtils.stripColors(rivalClan.getColorTag()));
 
-        List<ClanPlayer> acceptors = Helper.stripOffLinePlayers(rivalClan.getLeaders());
+        List<ClanPlayer> acceptors = Helper.stripOffLinePlayersGlobal(rivalClan.getLeaders());
         acceptors.remove(requester);
 
         Request req = new Request(ClanRequest.BREAK_RIVALRY, acceptors, requester, rivalClan.getTag(), requestingClan, msg);
-        requests.put(req.getTarget(), req);
+        String key = req.getTarget();
+        requests.put(key, req);
+        storeInRedis(key, req);
         ask(req);
     }
 
     public void accept(ClanPlayer cp) {
-        Request req = requests.get(cp.getTag());
+        // First check for clan-level requests (leader votes)
+        final String clanTag = cp.getTag();
+        Request req = getRequest(clanTag);
 
         if (req != null) {
             req.vote(cp.getName(), VoteResult.ACCEPT);
+            
+            // Update request in Redis with the new vote
+            updateRequestInRedis(clanTag, req);
+            
+            // Publish vote to other servers
+            publishVote(clanTag, cp.getName(), VoteResult.ACCEPT);
+            
             processResults(req);
         } else {
-            req = requests.get(cp.getCleanName());
+            // Check for personal requests (invites) - use player name as key
+            Request inviteReq = getRequest(cp.getCleanName());
 
-            if (req != null) {
-                processInvite(req, VoteResult.ACCEPT);
+            if (inviteReq != null) {
+                processInvite(inviteReq, VoteResult.ACCEPT);
             }
         }
     }
 
     public void deny(ClanPlayer cp) {
-        Request req = requests.get(cp.getTag());
+        // First check for clan-level requests (leader votes)
+        final String clanTag = cp.getTag();
+        Request req = getRequest(clanTag);
 
         if (req != null) {
             req.vote(cp.getName(), VoteResult.DENY);
+            
+            // Update request in Redis with the new vote
+            updateRequestInRedis(clanTag, req);
+            
+            // Publish vote to other servers
+            publishVote(clanTag, cp.getName(), VoteResult.DENY);
+            
             processResults(req);
         } else {
-            req = requests.get(cp.getCleanName());
+            // Check for personal requests (invites) - use player name as key
+            Request inviteReq = getRequest(cp.getCleanName());
 
-            if (req != null) {
-                processInvite(req, VoteResult.DENY);
+            if (inviteReq != null) {
+                processInvite(inviteReq, VoteResult.DENY);
             }
         }
     }
 
     public void processInvite(Request req, VoteResult vote) {
-        requests.remove(req.getTarget().toLowerCase());
+        String key = req.getTarget().toLowerCase();
+        requests.remove(key);
+        removeFromRedis(key, "invite_" + vote.name().toLowerCase());
 
         Clan clan = req.getClan();
         Player invited = Bukkit.getPlayerExact(req.getTarget());
@@ -239,7 +515,6 @@ public final class RequestManager {
         }
     }
 
-
     public void processResults(Request req) {
         Clan requestClan = req.getClan();
         ClanPlayer requester = req.getRequester();
@@ -255,6 +530,8 @@ public final class RequestManager {
 
         List<String> accepts = req.getAccepts();
         List<String> denies = req.getDenies();
+
+        String keyToRemove = target;
 
         switch (req.getType()) {
             case START_WAR:
@@ -274,7 +551,7 @@ public final class RequestManager {
                 if (!req.votingFinished() || targetUuid == null) {
                     return;
                 }
-                target = requestClan.getTag();
+                keyToRemove = requestClan.getTag();
 
                 if (req.getType() == ClanRequest.DEMOTE) {
                     processDemote(req, requestClan, targetUuid, denies);
@@ -293,14 +570,14 @@ public final class RequestManager {
                 if (!req.votingFinished()) {
                     return;
                 }
-
                 processRename(req);
                 break;
             default:
                 return;
         }
 
-        requests.remove(target);
+        requests.remove(keyToRemove);
+        removeFromRedis(keyToRemove, "processed_" + req.getType().name().toLowerCase());
         SimpleClans.getInstance().getServer().getPluginManager().callEvent(new RequestFinishedEvent(req));
         req.cleanVotes();
     }
@@ -416,8 +693,10 @@ public final class RequestManager {
         for (Request req : new LinkedList<>(requests.values())) {
             for (ClanPlayer cp : req.getAcceptors()) {
                 if (cp.getName().equalsIgnoreCase(playerName)) {
+                    String key = req.getClan().getTag();
                     req.getClan().leaderAnnounce(lang("signed.off.request.cancelled", RED + playerName, req.getType()));
-                    requests.remove(req.getClan().getTag());
+                    requests.remove(key);
+                    removeFromRedis(key, "player_signed_off");
                     break;
                 }
             }
@@ -429,11 +708,12 @@ public final class RequestManager {
         Iterator<Map.Entry<String, Request>> iterator = requests.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<String, Request> entry = iterator.next();
-            final String requester = entry.getKey();
+            final String key = entry.getKey();
             final String target = entry.getValue().getTarget();
-            if (keyOrTarget.equals(requester) || keyOrTarget.equals(target)) {
+            if (keyOrTarget.equals(key) || keyOrTarget.equals(target)) {
                 entry.getValue().cleanVotes();
                 iterator.remove();
+                removeFromRedis(key, "removed");
             }
         }
     }
@@ -447,14 +727,18 @@ public final class RequestManager {
             @Override
             public void run() {
                 for (Iterator<Map.Entry<String, Request>> iter = requests.entrySet().iterator(); iter.hasNext(); ) {
-                    Request req = iter.next().getValue();
+                    Map.Entry<String, Request> entry = iter.next();
+                    Request req = entry.getValue();
 
                     if (req == null) {
                         continue;
                     }
 
                     if (req.reachedRequestLimit()) {
+                        String key = entry.getKey();
                         iter.remove();
+                        removeFromRedis(key, "expired");
+                        continue;
                     }
 
                     ask(req);
@@ -470,22 +754,50 @@ public final class RequestManager {
      * @param req the Request
      */
     public void ask(final Request req) {
+        // Skip Redis notification on first ask (askCount == 0) because publishNewRequest already sent it
+        boolean skipRemote = isRedisEnabled() && req.getAskCount() == 0;
+        
         String message = lang("request.message", req.getClan().getColorTag(), req.getMsg());
-        ArrayList<Player> recipients = new ArrayList<>();
+        ArrayList<Player> localRecipients = new ArrayList<>();
+        ArrayList<String> remoteRecipients = new ArrayList<>();
+        
         if (req.getType() == ClanRequest.INVITE) {
-            recipients.add(Bukkit.getPlayerExact(req.getTarget()));
+            Player localPlayer = Bukkit.getPlayerExact(req.getTarget());
+            if (localPlayer != null) {
+                localRecipients.add(localPlayer);
+            } else if (isRedisEnabled() && !skipRemote) {
+                // Player is on another server - send message via Redis
+                plugin.getProxyManager().sendMessage(req.getTarget(), message);
+            }
         } else {
-            for (ClanPlayer cp : req.getAcceptors()) {
-                if (cp.getVote() == null) {
-                    recipients.add(cp.toPlayer());
+            // For non-invite requests (ally, war, etc.), check each acceptor
+            List<ClanPlayer> acceptors = req.getAcceptors();
+            
+            if (acceptors != null) {
+                for (ClanPlayer cp : acceptors) {
+                    if (cp.getVote() == null) {
+                        Player localPlayer = cp.toPlayer();
+                        if (localPlayer != null) {
+                            localRecipients.add(localPlayer);
+                        } else if (isRedisEnabled() && !skipRemote && plugin.getProxyManager().isOnline(cp.getName())) {
+                            // Player is on another server
+                            remoteRecipients.add(cp.getName());
+                        }
+                    }
                 }
             }
         }
 
-        for (Player recipient : recipients) {
+        // Send to local players
+        for (Player recipient : localRecipients) {
             if (recipient != null) {
                 recipient.spigot().sendMessage(ChatUtils.toBaseComponents(recipient, message));
             }
+        }
+        
+        // Send to remote players via Redis
+        for (String remoteName : remoteRecipients) {
+            plugin.getProxyManager().sendMessage(remoteName, message);
         }
 
         Bukkit.getScheduler().runTask(plugin, () -> Bukkit.getPluginManager().callEvent(new RequestEvent(req)));
